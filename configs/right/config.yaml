@@ -1,6 +1,6 @@
 bound_method: "forward"
 render_method: "splatfacto"
-object_name: "uturn"
+object_name: "right"
 odd_type: "cylinder"
 save_filename: "traj"
 
@@ -27,7 +27,7 @@ gs_batch: 100
 part: [1,2,4]
 
 data_time: "2025-05-09_151825"
-checkpoint_filename: "step-000040005.ckpt"
+checkpoint_filename: "step-000040004.ckpt"
 
 bg_img_path: null
 bg_pure_color: [1.0, 1.0, 1.0]

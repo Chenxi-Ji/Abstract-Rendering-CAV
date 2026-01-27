@@ -21,8 +21,9 @@ sys.path.append(grandfather_path)
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 from collections import defaultdict
 
-from scripts.utils_partition import generate_partition
+from scripts.utils_partition import generate_partition, refine_partition
 from utils_operation import alpha_blending, alpha_blending_interval
+from scripts.utils_save import save_abstract_record
 from render_models import GsplatRGB, TransferModel
 
 import argparse
@@ -40,48 +41,6 @@ bound_opts = {
         # 'lr_alpha':0.02, 
         'early_stop_patience':5},
 } 
-
-# --- Drop-in: helper to save abstract record (.pt with 8 fields)
-def save_abstract_record(save_dir, index, lower_input, upper_input, lower_img, upper_img):
-    """
-    Save an abstract image record with required fields:
-      lower, upper, lA, uA, lb, ub, xl, xu
-    """
-
-    if isinstance(lower_input, np.ndarray):
-        lower_i = torch.from_numpy(lower_input.astype(np.float32, copy=False))
-    else:
-        lower_i = lower_input.to(dtype=torch.float32).detach().cpu()
-
-    if isinstance(upper_input, np.ndarray):
-        upper_i = torch.from_numpy(upper_input.astype(np.float32, copy=False))
-    else:
-        upper_i = upper_input.to(dtype=torch.float32).detach().cpu()
-
-    if isinstance(lower_img, np.ndarray):
-        lower_t = torch.from_numpy(lower_img.astype(np.float32))
-    else:
-        lower_t = lower_img.to(dtype=torch.float32).cpu()
-
-    if isinstance(upper_img, np.ndarray):
-        upper_t = torch.from_numpy(upper_img.astype(np.float32))
-    else:
-        upper_t = upper_img.to(dtype=torch.float32).detach().cpu()
-    
-    record = {
-        "lower": lower_t,  # (H, W, 3), float32, [0,1]
-        "upper": upper_t,  # (H, W, 3), float32, [0,1]
-        "lA": None,
-        "uA": None,
-        "lb": None,
-        "ub": None,
-        "xl": lower_i,
-        "xu": upper_i,
-    }
-    out_path = os.path.join(save_dir, f"abstract_{index:06d}.pt")
-    torch.save(record, out_path)
-    return out_path
-
 
 def alpha_blending_ref(net, input_ref):
     
@@ -185,7 +144,6 @@ def alpha_blending_ptb(net, input_ref, input_lb, input_ub, bound_method):
 
     
 def main(setup_dict):
-    ### Default command: python3 scripts/abstract_gsplat.py --config configs/uturn/config.yaml --odd configs/uturn/traj.json
     key_list = [
         "bound_method", "render_method", "object_name", "odd_type", "width", "height",
         "fx", "fy", "eps2d", "tile_size", "min_distance", "max_distance", "gs_batch",
@@ -295,7 +253,8 @@ def main(setup_dict):
         pbar2 = tqdm(total=len(inputs_queue),desc="Processing Inputs", unit="item")
 
         while inputs_queue:
-            input_center, input_lb, input_ub = inputs_queue.popleft() # [N, ]
+            input_center_org, input_lb_org, input_ub_org = inputs_queue.popleft() # [N, ]
+            input_center, input_lb, input_ub = refine_partition(input_center_org, input_lb_org, input_ub_org, odd_type) 
             input_center, input_lb, input_ub = input_center.unsqueeze(0), input_lb.unsqueeze(0), input_ub.unsqueeze(0) #[1, N]
             verf_net.call_model_preprocess("sort_gauss", input_center)
 
@@ -356,11 +315,14 @@ def main(setup_dict):
                 # print("input_lb:", input_lb)
                 save_abstract_record(
                     save_dir=save_folder_full,
-                    index=absimg_num,
-                    lower_input = input_lb,
-                    upper_input=input_ub,
+                    index = absimg_num,
+                    lower_input = input_lb_org,
+                    upper_input = input_ub_org,
                     lower_img=img_lb_f,
                     upper_img=img_ub_f,
+                    point = base_trans,
+                    direction = direction,
+                    radius = radius,
                 )
 
             absimg_num+=1
@@ -373,6 +335,7 @@ def main(setup_dict):
     return 0
 
 if __name__ == '__main__':
+    ### Default command: python3 scripts/abstract_gsplat.py --config configs/uturn/config.yaml --odd configs/uturn/traj.json
     parser = argparse.ArgumentParser(description="Abstract Gsplat with YAML configuration.")
     parser.add_argument("--config", type=str, required=True, help="Path to the YAML configuration file.")
     parser.add_argument("--odd", type=str, required=True, help="Path to the YAML configuration file.")
