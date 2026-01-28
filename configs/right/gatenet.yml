@@ -9,4 +9,4 @@ width: 64
 height: 64
 
 debug: True
-threshold: [170.0, 160.0, 110.0]
+threshold: [210.0, 210.0, 130.0]

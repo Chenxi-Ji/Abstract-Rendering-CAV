@@ -107,7 +107,7 @@ def plot_filled_cylinder_fast(
     d_t = torch.from_numpy(d).float()
     theta_t = torch.from_numpy(theta).float()
 
-    alpha = 0.35 / n_r  # keep opacity stable
+    alpha = 0.25 / n_r  # keep opacity stable
 
     for r in r_vals:
         points = (
