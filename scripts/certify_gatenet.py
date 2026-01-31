@@ -201,7 +201,7 @@ def main(config_path):
 
 
 if __name__ == "__main__":
-    ### Default command: python3 scripts/certify_gatenet.py --config configs/${case_name}/gatenet.yml --debug
+    ### Default command: python3 scripts/certify_gatenet.py --config configs/${case_name}/gatenet.yml
     parser = argparse.ArgumentParser(description="Certify GateNet with abstract records.")
     parser.add_argument("--config", type=str, required=True, help="Path to the gatenet.yml configuration file.")
     args = parser.parse_args()

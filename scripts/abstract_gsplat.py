@@ -22,7 +22,7 @@ from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 from collections import defaultdict
 
 from scripts.utils_partition import generate_partition, refine_partition
-from utils_operation import alpha_blending, alpha_blending_interval
+from scrips.utils_alpha_blending import alpha_blending_ref, alpha_blending_ptb
 from scripts.utils_save import save_abstract_record
 from render_models import GsplatRGB, TransferModel
 
@@ -34,132 +34,25 @@ warnings.filterwarnings("ignore")
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 DTYPE = torch.float32
 
-bound_opts = {
-    'conv_mode': 'matrix',
-    'optimize_bound_args': {
-        'iteration': 100, 
-        # 'lr_alpha':0.02, 
-        'early_stop_patience':5},
-} 
-
-def alpha_blending_ref(net, input_ref):
-    
-    N = net.call_model("get_num")
-    triu_mask = torch.triu(torch.ones(N+2, N+2), diagonal=1)
-    bg_color=(net.call_model("get_bg_color_tile")).unsqueeze(0).unsqueeze(-2) #[1, TH, TW, N, 3]
-
-    #print(f"Number of Gaussians used in rendering: {N}")
-    if N==0:
-        return bg_color.squeeze(-2)
-
-    else:
-        net.call_model("update_model_param", 0,N,"fast")
-        colors_alpha = net.call_model_preprocess("render_color_alpha", input_ref)  #[1, TH, TW, N, 4]
-
-        colors, alpha = colors_alpha.split([3,1], dim=-1)
-
-        ones = torch.ones_like(alpha[:, :, :, 0:1, :])
-        alpha = torch.cat([alpha,ones], dim=-2) # [1, TH, TW, 2, 1]
-        colors = torch.cat([colors,bg_color], dim=-2) # [1, TH, TW, 2, 3]
-
-        colors_alpha_out = alpha_blending(alpha, colors, "fast", triu_mask)
-        color_out, alpha_out = colors_alpha_out.split([3,1], dim=-1)
-
-        color_out = color_out.squeeze(-2)
-        return color_out
-
-
-def alpha_blending_ptb(net, input_ref, input_lb, input_ub, bound_method):
-    N = net.call_model("get_num")
-    gs_batch = net.call_model("get_gs_batch")
-    bg_color=(net.call_model("get_bg_color_tile")).unsqueeze(0).unsqueeze(-2) #[1, TH, TW, N, 3]
-
-    if N==0:
-        return bg_color.squeeze(-2), bg_color.squeeze(-2)
-    else:
-        alphas_int_lb = []
-        alphas_int_ub = []
-
-        hl,wl,hu,wu = (net.call_model("get_tile_dict")[key] for key in ["hl", "wl", "hu", "wu"])
-
-        ptb = PerturbationLpNorm(x_L=input_lb,x_U=input_ub)
-        input_ptb = BoundedTensor(input_ref, ptb)
-
-        with torch.no_grad():
-            for i, idx_start in enumerate(range(0, N, gs_batch)):
-                idx_end = min(idx_start + gs_batch, N)
-
-                net.call_model("update_model_param",idx_start,idx_end,"middle")
-                model = BoundedModule(net, input_ref, bound_opts=bound_opts, device=DEVICE)
-
-                alpha_ibp_lb, alpha_ibp_ub = model.compute_bounds(x=(input_ptb, ), method="ibp")
-                reference_interm_bounds = {}
-                for node in model.nodes():
-                    if (node.perturbed
-                        and isinstance(node.lower, torch.Tensor)
-                        and isinstance(node.upper, torch.Tensor)):
-                        reference_interm_bounds[node.name] = (node.lower, node.upper)
-
-                # required_A = defaultdict(set)
-                # required_A[model.output_name[0]].add(model.input_name[0])
-
-                alpha_int_lb, alpha_int_ub= model.compute_bounds(
-                    x= (input_ptb, ), 
-                    method=bound_method, 
-                    reference_bounds=reference_interm_bounds, 
-                )  #[1, TH, TW, N, 4]
-                
-                # lower_A, lower_bias = A_dict[model.output_name[0]][model.input_name[0]]['lA'], A_dict[model.output_name[0]][model.input_name[0]]['lbias']
-                # upper_A, upper_bias = A_dict[model.output_name[0]][model.input_name[0]]['uA'], A_dict[model.output_name[0]][model.input_name[0]]['ubias']
-                # print(f"lower_A shape: {lower_A.shape}, lower_bias shape: {lower_bias.shape}")
-                # print(f"upper_A shape: {upper_A.shape}, upper_bias shape: {upper_bias.shape}")
-        
-                alpha_int_lb = alpha_int_lb.reshape(1, hu-hl, wu-wl, idx_end-idx_start, 1)
-                alpha_int_ub = alpha_int_ub.reshape(1, hu-hl, wu-wl, idx_end-idx_start, 1)
-
-                alphas_int_lb.append(alpha_int_lb.detach())
-                alphas_int_ub.append(alpha_int_ub.detach())
-
-            del model
-            torch.cuda.empty_cache()
-
-            alphas_int_lb = torch.cat(alphas_int_lb, dim=-2)
-            alphas_int_ub = torch.cat(alphas_int_ub, dim=-2)
-
-        # Load Colors within Tile and Add background
-        colors = net.call_model("get_color_tile")
-        colors = colors.view(1, 1, 1, alphas_int_lb.size(-2), 3).repeat(1, alpha_int_lb.size(1), alpha_int_lb.size(2), 1, 1)
-        colors = torch.cat([colors, bg_color], dim = -2)
-
-        ones = torch.ones_like(alphas_int_lb[:, :, :, 0:1, :])
-        alphas_int_lb = torch.cat([alphas_int_lb, ones], dim=-2)
-        alphas_int_ub = torch.cat([alphas_int_ub, ones], dim=-2)        
-
-        color_alpha_out_lb, color_alpha_out_ub = alpha_blending_interval(alphas_int_lb, alphas_int_ub, colors)
-
-        color_out_lb,alpha_out_lb = color_alpha_out_lb.split([3,1],dim=-1)
-        color_out_ub,alpha_out_ub = color_alpha_out_ub.split([3,1],dim=-1)
-
-    return color_out_lb.squeeze(-2), color_out_ub.squeeze(-2)
 
     
 def main(setup_dict):
     key_list = [
-        "bound_method", "render_method", "object_name", "odd_type", "width", "height",
+        "bound_method", "render_method", "case_name", "odd_type", "debug", "width", "height",
         "fx", "fy", "eps2d", "tile_size", "min_distance", "max_distance", "gs_batch",
         "part", "scene_path", "checkpoint_filename",
         "save_folder", "bg_img_path", "bg_pure_color", "save_ref", "save_bound",
         "N_samples", "poses", "radiuss"
     ]
 
-    bound_method, render_method, object_name, odd_type, width, height, fx, fy, eps2d, \
+    bound_method, render_method, case_name, odd_type, debug, width, height, fx, fy, eps2d, \
     tile_size, min_distance, max_distance, gs_batch, part, \
     scene_path, checkpoint_filename, save_folder, bg_img_path, \
     bg_pure_color, save_ref, save_bound, N_samples, poses, radiuss = itemgetter(*key_list)(setup_dict)
 
     # Load Already Trained Scene Files
     script_dir = os.path.dirname(os.path.realpath(__file__))
-    scene_folder = os.path.join(script_dir, '../nerfstudio/', scene_path)
+    scene_folder = os.path.join(script_dir, scene_path)
     transform_file = os.path.join(scene_folder, 'dataparser_transforms.json')
     checkpoint_file = os.path.join(scene_folder, 'nerfstudio_models/', checkpoint_filename)
 
@@ -191,7 +84,7 @@ def main(setup_dict):
 
     assert torch.all((opacities>=0) & (opacities<=1))
 
-    # Define camera_dict and scene_dict
+    # Define camera_dict
     camera_dict = {
         "fx": fx,
         "fy": fy,
@@ -199,6 +92,7 @@ def main(setup_dict):
         "height": height,
     }
 
+    # Define scene_dict
     scene_dict_all = {
         "means": means,
         "quats": quats,
@@ -223,17 +117,17 @@ def main(setup_dict):
     radiuss = np.array(radiuss)
     rots = Rs.as_matrix()
 
-    # Create Queue for Inputs
+    # Create Queue for Waypoints
     queue = deque(zip(transs, rots, radiuss))
     absimg_num = 0
-    pbar = tqdm(total=len(queue)-1,desc="Processing Traj", unit="item")
+    pbar = tqdm(total=len(queue)-1,desc="Processing Poses", unit="item")
 
     # Define Render and Verification Network
     pipeline_type = "abstract-rendering"
     render_net = GsplatRGB(camera_dict, scene_dict_all, min_distance, max_distance, bg_color, eps2d, gs_batch).to(DEVICE)
     verf_net = TransferModel(render_net, pipeline_type, None, None, transform_hom, scale, odd_type).to(DEVICE)
 
-    # Process Each Input
+    # Create Partition Inputs   
     inputs_center, inputs_lb, inputs_ub = generate_partition(odd_type, part) # [part, N]
     inputs_center, inputs_lb, inputs_ub= torch.tensor(inputs_center).to(device=DEVICE, dtype=DTYPE), torch.tensor(inputs_lb).to(device=DEVICE, dtype=DTYPE), torch.tensor(inputs_ub).to(device=DEVICE, dtype=DTYPE)
     # partition_num = len(inputs_center)
@@ -249,13 +143,16 @@ def main(setup_dict):
         radius = torch.tensor(radius, device=DEVICE, dtype=DTYPE) #[1, ]
         verf_net.update_model_param(rot, base_trans, direction, radius)
 
+        # Create Queue for Inputs (Pose Cells)
         inputs_queue = deque(zip(inputs_center, inputs_lb, inputs_ub))
-        pbar2 = tqdm(total=len(inputs_queue),desc="Processing Inputs", unit="item")
+        pbar2 = tqdm(total=len(inputs_queue),desc="Processing Cells", unit="item")
 
         while inputs_queue:
             input_center_org, input_lb_org, input_ub_org = inputs_queue.popleft() # [N, ]
             input_center, input_lb, input_ub = refine_partition(input_center_org.clone(), input_lb_org.clone(), input_ub_org.clone(), odd_type) 
             input_center, input_lb, input_ub = input_center.unsqueeze(0), input_lb.unsqueeze(0), input_ub.unsqueeze(0) #[1, N]
+            
+            # Sort Gaussians based on Distance to Camera
             verf_net.call_model_preprocess("sort_gauss", input_center)
 
             if save_ref:
@@ -264,13 +161,14 @@ def main(setup_dict):
                 img_lb = np.zeros((height, width,3))
                 img_ub = np.zeros((height, width,3))
         
-            
+            # Create Tiles Queue
             tiles_queue = [
                 (h,w,min(h+tile_size, height),min(w+tile_size, width)) \
                 for h in range(0, height, tile_size) for w in range(0, width, tile_size) 
             ] 
 
-            pbar3 = tqdm(total=len(tiles_queue),desc="Processing Tiles", unit="item", disable=True)
+            if debug:
+                pbar3 = tqdm(total=len(tiles_queue),desc="Processing Tiles", unit="item", disable=True)
 
             while tiles_queue!=[]:
                 hl,wl,hu,wu = tiles_queue.pop(0)
@@ -281,27 +179,25 @@ def main(setup_dict):
                     "wu": wu,
                 }
 
-                # #print(f"Processing absimg {absimg_num:06d}, tile hl:{hl}, wl:{wl}, hu:{hu}, wu:{wu}")
-                # input_samples = generate_samples(input_lb, input_ub, input_ref, N_samples)
-                # verf_net.call_model_preprocess("crop_gauss",input_samples, tile_dict)
+                # Crop Gaussians within Tile
                 verf_net.call_model_preprocess("crop_gauss",input_center, tile_dict)
 
                 if save_ref:
                     ref_tile = alpha_blending_ref(verf_net, input_center)
-                    # print(f"ref_tile min and max: {torch.min(ref_tile).item():.4} {torch.max(ref_tile).item():.4}")
                     ref_tile_np = ref_tile.squeeze(0).detach().cpu().numpy()
                     img_ref[hl:hu, wl:wu, :] = ref_tile_np
 
                 if save_bound:
                     lb_tile, ub_tile = alpha_blending_ptb(verf_net, input_center, input_lb, input_ub, bound_method)
-                    # print(f"lb_tile min and ub_tile max: {torch.min(lb_tile).item():.4} {torch.max(ub_tile).item():.4}")
                     lb_tile_np = lb_tile.squeeze(0).detach().cpu().numpy() # [TH, TW, 3]
                     ub_tile_np = ub_tile.squeeze(0).detach().cpu().numpy()
                     img_lb[hl:hu, wl:wu, :] = lb_tile_np
                     img_ub[hl:hu, wl:wu, :] = ub_tile_np
 
+                if debug:
                     pbar3.update(1)
-            pbar3.close()
+            if debug:
+                pbar3.close()
 
             if save_ref:
                 img_ref= (img_ref.clip(min=0.0, max=1.0)*255).astype(np.uint8)
@@ -309,10 +205,8 @@ def main(setup_dict):
                 res_ref.save(f'{save_folder_full}/ref_{absimg_num:06d}.png')
 
             if save_bound:
-                # --- Drop-in replacement: save .pt record with 8 fields instead of PNGs
                 img_lb_f = img_lb.clip(min=0.0, max=1.0).astype(np.float32, copy=False)
                 img_ub_f = img_ub.clip(min=0.0, max=1.0).astype(np.float32, copy=False)
-                # print("input_lb:", input_lb)
                 save_abstract_record(
                     save_dir=save_folder_full,
                     index = absimg_num,
@@ -348,20 +242,22 @@ if __name__ == '__main__':
         odd_file = json.load(file)
 
     # Automatically determine scene_path and save_folder
-    scene_path = f"outputs/{config['object_name']}/{config['render_method']}/{config['data_time']}"
-    save_folder = f"../Outputs/AbstractImages/{config['object_name']}/{config['odd_type']}"
+    scene_path = f"../nerfstudio/outputs/{config['case_name']}/{config['render_method']}/{config['data_time']}"
+    save_folder = f"../Outputs/AbstractImages/{config['case_name']}/{config['odd_type']}"
 
+    downsampling_ratio = config["downsampling_ratio"]
     setup_dict = {
         "bound_method": config["bound_method"],
         "render_method": config["render_method"],
-        "object_name": config["object_name"],
+        "case_name": config["case_name"],
         "odd_type": config["odd_type"],
+        "debug": config["debug"],
 
-        "width": config["width"],
-        "height": config["height"],
-        "fx": config["fx"],
-        "fy": config["fy"],
-        "eps2d": config["eps2d"],
+        "width": int(config["width"]/downsampling_ratio),
+        "height": int(config["height"]/downsampling_ratio),
+        "fx": config["fx"]/downsampling_ratio,
+        "fy": config["fy"]/downsampling_ratio,
+        "eps2d": config["eps2d"]/downsampling_ratio,
         "tile_size": config["tile_size_abstract"],
         "min_distance": config["min_distance"],
         "max_distance": config["max_distance"],

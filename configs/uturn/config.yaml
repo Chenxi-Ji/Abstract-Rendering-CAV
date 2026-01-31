@@ -1,24 +1,26 @@
 bound_method: "forward"
 render_method: "splatfacto"
-object_name: "uturn"
+case_name: "uturn"
 odd_type: "cylinder"
-save_filename: "samples"
+save_filename: null
+debug: false
 
-# width: 256
-# height: 256
-# fx: 216
-# fy: 216
-# eps2d: 8.0
+width: 256
+height: 256
+fx: 216
+fy: 216
+eps2d: 8.0
 # width: 128
 # height: 128
 # fx: 108
 # fy: 108
 # eps2d: 4.0
-width: 64
-height: 64
-fx: 54
-fy: 54
-eps2d: 2.0
+# width: 64
+# height: 64
+# fx: 54
+# fy: 54
+# eps2d: 2.0
+downsampling_ratio: 4
 tile_size_abstract: 16
 tile_size_render: 24
 min_distance: 0.01

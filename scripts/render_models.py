@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 
 from scripts.utils_rotation import quaternion_to_rotation_matrix
-from scripts.utils_operation import regulate, alpha_blending
+from scripts.utils_operation import regulate
+from scripts.utils_alpha_blending import alpha_blending
 from scripts.utils_transform import input_to_trans, pose_to_matrix
 
 
@@ -538,86 +539,6 @@ class GsplatRGB(nn.Module):
 
         return alpha # [1, TH, TW, N, 1]
 
-    # def alpha_blending(self, alpha, colors, blending_method):
-    #     return alpha_blending(alpha, colors, blending_method)
-
-    # def render_color(self, pose):
-
-    #     # Batch 
-    #     hl,wl,hu,wu = (self.tile_dict[key] for key in ["hl", "wl", "hu", "wu"])
-    #     if self.scene_dict is None:
-    #         bg_color = self.bg_color[hl:hu, wl:wu, :].view(1, hu-hl, wu-wl, 3)
-
-    #         return bg_color
-    #     else:
-    #         N = self.scene_dict["opacities"].size(0)
-    #         DEVICE = self.scene_dict["opacities"].device
-    #         gs_batch = self.gs_batch
-
-    #         alpha_list = []
-    #         colors_list = []
-
-    #         ####
-    #         #print(self.alpha_remainder.shape)
-    #         colors_batch = self.scene_dict["colors"].view(1, 1, 1, N, 3).repeat(1, hu-hl, wu-wl, 1, 1)
-    #         alpha_batch = self.render_alpha(pose, self.scene_dict) # [1, TH, TW, B, 1]
-
-    #         ones = torch.ones((1, hu-hl, wu-wl, 1, 1), device=DEVICE)
-    #         bg_color = self.bg_color[hl:hu, wl:wu, :].view(1, hu-hl, wu-wl, 1, 3)
-    #         # print(alpha_batch.shape, self.alpha_remainder.shape, ones.shape)
-    #         # alpha_batch = torch.cat([alpha_batch, ones], dim=-2)
-    #         # colors_batch = torch.cat([colors_batch, bg_color], dim=-2)
-    #         if self.alpha_remainder is None:
-    #             alpha_batch = torch.cat([alpha_batch, ones], dim=-2)
-    #             colors_batch = torch.cat([colors_batch, bg_color], dim=-2)
-    #         else:
-    #             alpha_batch = torch.cat([alpha_batch, self.alpha_remainder, ones], dim=-2)
-    #             print(colors_batch.shape, self.colors_remainder.shape, bg_color.shape)
-    #             colors_batch = torch.cat([colors_batch, self.colors_remainder, bg_color], dim=-2)
-
-    #         colors_combined, alpha_combined = self.alpha_blending(alpha_batch, colors_batch, "fast").split([3,1], dim=-1) 
-    #         return colors_combined.squeeze(-2)
-
-    #     ####
-
-    #     if N==0:
-    #         print("Warning None Gaussian is selected!")
-
-    #     else:
-    #         for epcoh, idx_start in enumerate(range(0, N, gs_batch)):
-    #             idx_end = min(idx_start + gs_batch, N)
-
-    #             scene_dict_batch = {
-    #                 name: attr[idx_start:idx_end]
-    #                 for name, attr in self.scene_dict.items()
-    #             }
-
-    #             colors_batch = scene_dict_batch["colors"].view(1, 1, 1, idx_end-idx_start, 3).repeat(1, hu-hl, wu-wl, 1, 1)
-    #             alpha_batch = self.render_alpha(pose, scene_dict_batch) # [1, TH, TW, B, 1]
-
-    #             if epcoh <=1:
-    #                 colors_combined, alpha_combined = self.alpha_blending(alpha_batch, colors_batch, "slow").split([3,1], dim=-1) # [1, TH, TW, 1, 1], [1, TH, TW, 1, 3]
-    #             else:
-    #                 colors_combined, alpha_combined = self.alpha_blending(alpha_batch, colors_batch, "fast").split([3,1], dim=-1) 
-
-    #             alpha_list.append(alpha_combined)
-    #             colors_list.append(colors_combined)
-
-
-    #     # Add Background
-    #     alpha_list.append(torch.ones((1, hu-hl, wu-wl, 1, 1), device=DEVICE))
-    #     colors_list.append(self.bg_color[hl:hu, wl:wu, :].view(1, hu-hl, wu-wl, 1, 3)) 
-            
-    #     alpha_epoch = torch.cat(alpha_list, dim=-2) # [1, TH, TW, E, 1]
-    #     colors_epoch = torch.cat(colors_list, dim=-2) # [1, TH, TW, E, 1]
-
-    #     # Alpha-Blending
-    #     colors_out, alpha_out = self.alpha_blending(alpha_epoch, colors_epoch, "slow").split([3,1], dim=-1) # [1, TH, TW, 1, 1], [1, TH, TW, 1, 3]
-
-    #     # Output
-    #     res = colors_out.squeeze(-2) # [1, TH, TW, 3]
-    #     return res
-
     def render_color_alpha(self, pose):
         scene_dict = {
             name: attr[self.idx_start:self.idx_end]
@@ -646,9 +567,8 @@ class GsplatRGB(nn.Module):
 
         return self.render_alpha_tile(pose)
         
-        
 
-
+### Belows are backup classes for alpha blending, don't be called in main pipeline###
 class AlphaBlending(nn.Module):
     def __init__(self, blending_method, triu_mask):
         super(AlphaBlending, self).__init__()
@@ -667,7 +587,6 @@ class AlphaBlendingNew(nn.Module):
         
         self.triu_mask = torch.triu(torch.ones(N, N), diagonal=1)
         self.colors = colors
-        # print(self.triu_mask.shape)
 
     def cumsum(self, x, triu_mask, dim=-2):
         N = x.size(-2)

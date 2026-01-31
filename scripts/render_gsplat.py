@@ -30,21 +30,21 @@ DTYPE = torch.float32
 def main(setup_dict):
 
     key_list = [
-        "bound_method", "render_method", "object_name", "odd_type", "width", "height",
+        "bound_method", "render_method", "case_name", "odd_type", "debug", "width", "height",
         "fx", "fy", "eps2d", "tile_size", "min_distance", "max_distance", "gs_batch",
         "part", "scene_path", "checkpoint_filename",
         "save_folder", "bg_img_path", "bg_pure_color", "save_ref", "save_bound",
         "N_samples", "poses", "radiuss"
     ]
 
-    bound_method, render_method, object_name, odd_type, width, height, fx, fy, eps2d, \
+    
+    bound_method, render_method, case_name, odd_type, debug, width, height, fx, fy, eps2d, \
     tile_size, min_distance, max_distance, gs_batch, part, \
     scene_path, checkpoint_filename, save_folder, bg_img_path, \
     bg_pure_color, save_ref, save_bound, N_samples, poses, radiuss = itemgetter(*key_list)(setup_dict)
 
-    # Load Already Trained Scene Files
     script_dir = os.path.dirname(os.path.realpath(__file__))
-    scene_folder = os.path.join(script_dir, '../nerfstudio/', scene_path)
+    scene_folder = os.path.join(script_dir, scene_path)
     transform_file = os.path.join(scene_folder, 'dataparser_transforms.json')
     checkpoint_file = os.path.join(scene_folder, 'nerfstudio_models/', checkpoint_filename)
 
@@ -108,7 +108,7 @@ def main(setup_dict):
     # Create Queue for Inputs
     queue = deque(zip(transs, rots))
     absimg_num = 0
-    pbar = tqdm(total=len(queue),desc="Processing inputs", unit="item")
+    pbar = tqdm(total=len(queue),desc="Processing Poses", unit="item")
     
     # Define Render and Verification Network
     pipeline_type = "rendering"
@@ -127,6 +127,7 @@ def main(setup_dict):
         if odd_type=="cylinder":
             input_ref = torch.zeros((1,3)).to(device=DEVICE, dtype=DTYPE)
 
+        # Sort Gaussians based on Distance to Camera
         verf_net.call_model_preprocess("sort_gauss", input_ref)
         
         tiles_queue = deque(
@@ -135,20 +136,24 @@ def main(setup_dict):
             for w in range(0, width, tile_size)
         )
 
+        if debug:
+            pbar2 = tqdm(total=len(tiles_queue), desc="Processing Tiles", unit="tile")
+
         while tiles_queue:
             hl, wl, hu, wu = tiles_queue.popleft()
-
             tile_dict = {"hl": hl, "wl": wl, "hu": hu, "wu": wu}
 
-            #input_samples = generate_samples(input_lb, input_ub, input_ref)
             verf_net.call_model("update_tile", tile_dict)
 
             if save_ref:
                 ref_tile = verf_net.forward(input_ref)
-                # print(f"ref_tile min and max: {torch.min(ref_tile).item():.4} {torch.max(ref_tile).item():.4}")
                 ref_tile_np = ref_tile.squeeze(0).detach().cpu().numpy()
                 img_ref[hl:hu, wl:wu, :] = ref_tile_np
-                
+
+            if debug:
+                pbar2.update(1)
+        if debug:
+            pbar2.close()
 
         if save_ref:
             img_ref= (img_ref.clip(min=0.0, max=1.0)*255).astype(np.uint8)
@@ -158,7 +163,6 @@ def main(setup_dict):
   
 
         absimg_num+=1
-
         pbar.update(1)
     pbar.close()
     return 0
@@ -177,22 +181,25 @@ if __name__=='__main__':
         odd_file = json.load(file)
 
     # Automatically determine scene_path and save_folder
-    scene_path = f"outputs/{config['object_name']}/{config['render_method']}/{config['data_time']}"
-    save_folder = f"../Outputs/RenderedImages/{config['object_name']}/{config['odd_type']}"
+    scene_path = f"../nerfstudio/outputs/{config['case_name']}/{config['render_method']}/{config['data_time']}"
+    save_folder = f"../Outputs/RenderedImages/{config['case_name']}/{config['odd_type']}"
     if config['save_filename'] is not None:
         save_folder = os.path.join(save_folder, config['save_filename'])
 
+    downsampling_ratio = config["downsampling_ratio"]
     setup_dict = {
         "bound_method": config["bound_method"],
         "render_method": config["render_method"],
-        "object_name": config["object_name"],
+        "case_name": config["case_name"],
         "odd_type": config["odd_type"],
+        "debug": config["debug"],
 
-        "width": config["width"],
-        "height": config["height"],
-        "fx": config["fx"],
-        "fy": config["fy"],
-        "eps2d": config["eps2d"],
+        "width": int(config["width"]/downsampling_ratio),
+        "height": int(config["height"]/downsampling_ratio),
+        "fx": config["fx"]/downsampling_ratio,
+        "fy": config["fy"]/downsampling_ratio,
+        "eps2d": config["eps2d"]/downsampling_ratio,
+
         "tile_size": config["tile_size_render"],
         "min_distance": config["min_distance"],
         "max_distance": config["max_distance"],
